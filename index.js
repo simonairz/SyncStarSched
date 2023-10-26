@@ -23,11 +23,11 @@ const defaultEvent = {
     'description': `Automatically added from ${config.urls.starbucks}.`,
     'start': {
       'dateTime': '2019-01-01T12:00:00-05:00',
-      'timeZone': 'America/New_York'
+      'timeZone': 'America/Chicago'
     },
     'end': {
       'dateTime': '2019-01-01T17:00:00-05:00',
-      'timeZone': 'America/New_York'
+      'timeZone': 'America/Chicago'
     },
     'reminders': {
       'useDefault': false,
@@ -54,71 +54,126 @@ const defaultEvent = {
 
 async function scrapeStarbucks() {
     // open browse and navigate to page
-    const browser = await puppeteer.launch({headless: true, devtools: false}); // update config in prod
+    const browser = await puppeteer.launch({headless: false, devtools: true}); // update config in prod
     const page = await browser.newPage();
     await page.goto(config.urls.starbucks);
 
     // get initial page status
     await page.waitForSelector("input.textbox")
+    
     pageStatus = await getPageStatus(page);
-
+    console.log(page.url());
     // keep smashing buttons until we're on schedule page
+    var passPage=false;
     while (!pageStatus.schedulePage) {
-     
+        //console.log("While Loop- "+page.url() + pageStatus);
         if (pageStatus.partnerPage) {
+            console.log("Entering Partner Numbers");
             await page.focus("input.textbox.txtUserid")
             await page.keyboard.type(secrets.partnerId)
-
-        } else if (pageStatus.passwordPage) {
-            await page.focus("input.textbox.tbxPassword")
+            page.click("input[class='sa-2019-button']")
+        } else if (pageStatus.passwordPage && !passPage) {
+            console.log("Entering password");
+            await page.focus(".textbox.tbxPassword")
             await page.keyboard.type(secrets.password)
-
+            page.click("input[type='submit']")
+            passPage = true;
+            await page.waitForNavigation({waitUntil: 'networkidle0'});
+            await page.waitForNavigation({waitUntil: 'networkidle0'});
+            console.log("Network loaded")
+            await page.waitForSelector('div.ellipsis');
+            console.log("On Schedule Page")
         } else if (pageStatus.securityPage) {
+            console.log("Entering Security Questions");
             const securityAnswer = secrets.securityPrompts[pageStatus.securityQuestion];
+            console.log("Question-"+pageStatus.securityQuestion+"\tAnswer-"+securityAnswer);
             await page.focus("input.textbox.tbxKBA")
             await page.keyboard.type(securityAnswer)
+            page.click("input[type='submit']")
         }
 
         // submit form
-        page.click("input[type='submit']:not(.aspNetDisabled)")
+        
 
         // wait for navigation and dom and check page
-        await page.waitForNavigation({waitUntil: 'networkidle2'});
-        await page.waitForSelector("input.textbox,.scheduleShift")
-        pageStatus = await getPageStatus(page);
+        
+        
+        if(!passPage){
+            await page.waitForNavigation({waitUntil: 'networkidle2'});
+            await page.waitForSelector("input.textbox,.scheduleShift")
+            pageStatus = await getPageStatus(page);
+        }
+        
+        //console.log("Page changed");
+        
     }
+    console.log("before navigation await");
+    await page.waitForNavigation({waitUntil: 'networkidle0'});
+    console.log("before selector await");
+    //await page.waitForTimeout(2000); // Wait for 2 seconds
+    try{
+        await page.waitForSelector('div.ellipsis');
+    }catch(e){
+        console.log(colors.Red,e);
+    }
+    
 
-
+    // await page.waitForNetworkIdle()
     // go hunting for info we want
-    var webShifts = await page.evaluate(() => {
+    try{
 
+    
+    var webShifts = await page.evaluate(() => {
+        console.log("page Eval")
         // executes on client in browser
-        var shifts = $(".scheduleShift").map(function() {
+        var shifts = $(".Job-time-ellipsis").map(function() {
             var $this = $(this)
-            var $store = $this.find(".scheduleShiftStore");
-            var $time = $this.find(".scheduleShiftTime");
-            var day = $this.closest(".scheduleDayRight").find(".scheduleDayTitle").text().trim()
-            var storeLink = $store.attr("href")
-            var storeText = $store.text()
-            var storeNumber = storeText.split(",")[0].split("#")[1].trim()
-            var storeName = storeText.split(",").slice(1).join(",").trim()
+            //var $store = $this.find(".scheduleShiftStore");
+            var dayRanges = $this.find("#textfield-1026-inputEl").text();
+            var dayStartRange = dayRanges.split("-")[0].trim()
+            
+            var dayRaw = $this.find(".Job-time-ellipsis").parentElement.parentElement.parentElement.parentElement.id;
+            const r = /\d+/;
+            var day = parseint(dayRaw.match(r)) - 1756 + dayStartRange;
+            //var storeLink = $store.attr("href")
+            //var storeText = $store.text()
+            //var storeNumber = storeText.split(",")[0].split("#")[1].trim()
+            //var storeName = storeText.split(",").slice(1).join(",").trim()
+            var $time = $this.find(".Job-time-ellipsis");
             var shiftText = $time.text().trim();
             var shiftStart = shiftText.split("-")[0].trim()
             var shiftEnd = shiftText.split("-")[1].trim()
 
+            //grabs date ranges
+
+            console.log(
+                "$this-" + $this + "\n" +
+                "$time-" + $time + "\n" +
+                "dayRanges-" + dayRanges + "\n" +
+                "dayStartRange-" + dayStartRange + "\n" +
+                "dayRaw- " + dayRaw + "\n" +
+                "day-" + day + "\n" +
+                "shiftText" + shiftText + "\n" +
+                "shiftStart" + shiftStart + "\n" +
+                "shiftEnd" + shiftEnd + "\n"
+            );
             return {
-               storeNumber,
-               storeName,
+               //storeNumber,
+               //storeName,
                day,
                shiftStart,
-               shiftEnd,
-               storeLink
+               shiftEnd
+               //storeLink
             }
 
          }).get();
-
+         //console.log(shifts);
          return shifts;
     })
+    }catch(e){
+        console.log("Error-");
+        console.log(e);
+    }
 
     // transform retrieved schedules
     for (let i=0; i < webShifts.length; i++) {
@@ -151,24 +206,47 @@ async function scrapeStarbucks() {
 }
 async function getPageStatus(myPage) {
     // determine what page we're on
-    return await myPage.evaluate(() => {
-            
-        const partner = document.querySelectorAll(".txtUserid")
-        const passBox = document.querySelectorAll("input.tbxPassword")
-        const secQuestion = document.querySelector(".bodytext.lblKBQ.lblKBQ1")
-        const schedule = document.querySelectorAll(".scheduleShift")
+    //console.log("Running Page Status");
+    try{
+        return await myPage.evaluate(() => {
+            //console.log("Pre-eval Stage")
+            const partner = document.querySelector(".textbox.txtUserid")
+            //console.log("partner-"+partner)
+            const passBox = document.querySelector(".textbox.tbxPassword")
+            //console.log("password-"+passBox)
+            const secQuestion = document.querySelector(".bodytext.lblKBQ.lblKBQ1.field-label")
+            //console.log("question-"+secQuestion)
+            const schedule = document.querySelectorAll("div.Job-time-ellipsis")
+            //console.log(colors.Green, schedule);
+            console.log(schedule);
+            var status = {
+                partnerPage: !!partner,
+                schedulePage: schedule.length > 0,
+                passwordPage: !!passBox,
+                securityPage: !!secQuestion,
+                securityQuestion: secQuestion ? secQuestion.innerText : ""
+            }
+            console.log("arr-" + schedule);
+            console.log("schedulePage"+ status.schedulePage);
+            // console.log("passwordPage"+ status.passwordPage)
+            // console.log("securityPage"+ status.securityPage)
+            console.log("securityQuestion"+ status.securityQuestion);
+            return status;
 
+        })
+    }catch(e){
+        console.log("Error Happened")
         var status = {
-            partnerPage: partner.length > 0,
-            schedulePage: schedule.length > 0,
-            passwordPage: passBox.length > 0,
-            securityPage: !!secQuestion,
-            securityQuestion: secQuestion ? secQuestion.innerText : ""
+            partnerPage: false,
+            schedulePage: false,
+            passwordPage: false,
+            securityPage: false,
+            securityQuestion: false
         }
-
+        
+        console.error(e);
         return status;
-
-    })
+    }
 }
 
 
@@ -287,7 +365,7 @@ async function syncSchedule(calendar, schedule, upcomingEvents) {
         insertShift.start.dateTime = shift.startMoment.format()
         insertShift.end.dateTime = shift.endMoment.format()
         insertShift.summary = `(${shift.duration.asHours()}HR) Starbucks`
-        insertShift.location = `${shift.storeName} - #${shift.storeNumber}`
+        //insertShift.location = `${shift.storeName} - #${shift.storeNumber}`
 
         let insertRes = await calendar.events.insert({
             calendarId: calendarId,
